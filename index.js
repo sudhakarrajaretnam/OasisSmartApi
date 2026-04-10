@@ -11,6 +11,7 @@ dotenv.config({path: path.join(__dirname, path.sep,`.env.${env}`) });
 
 const app = express();
 const port = process.env.PORT || 7000;
+const mongoServerSelectionTimeoutMS = Number(process.env.MONGO_SERVER_SELECTION_TIMEOUT_MS || 10000);
 
 app.use(express.static(path.join(__dirname, 'public')));
 app.use(express.urlencoded({ extended: true }));
@@ -25,13 +26,65 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.use(cookieParser());
 
-mongoose.connect(process.env.OASSIS_DB_URL, {
-    useNewUrlParser: true,
-    useUnifiedTopology: true
-}).then(() => {
-    console.log('Connected to MongoDB');
-}).catch((error) => {
-    console.error('Error connecting to MongoDB:', error);
+const sanitizeMongoUri = (uri = '') => uri.replace(/\/\/([^@]+)@/, '//<credentials>@');
+
+const buildMongoUriList = () => {
+    const uris = [process.env.OASSIS_DB_URL, process.env.OASSIS_DB_FALLBACK_URL]
+        .filter(Boolean)
+        .filter((uri, index, all) => all.indexOf(uri) === index);
+
+    if (uris.length === 0) {
+        throw new Error('Missing MongoDB connection string. Set OASSIS_DB_URL in the environment.');
+    }
+
+    return uris;
+};
+
+const logMongoConnectionError = (error, uri) => {
+    console.error(`Error connecting to MongoDB with ${sanitizeMongoUri(uri)}:`, error);
+
+    if (error?.code === 'ETIMEOUT' && error?.syscall === 'querySrv') {
+        console.error(
+            'MongoDB SRV lookup timed out. This usually means Node could not resolve the Atlas DNS record. ' +
+            'If this keeps happening, either fix DNS/network access or set OASSIS_DB_FALLBACK_URL to a direct mongodb:// replica-set URI.'
+        );
+    }
+
+    if (error?.name === 'MongooseServerSelectionError') {
+        console.error(
+            'MongoDB server selection failed. Check Atlas IP access rules and whether outbound TCP 27017 is allowed from this machine/network.'
+        );
+    }
+};
+
+const connectToMongo = async () => {
+    const mongoUris = buildMongoUriList();
+    let lastError;
+
+    for (const [index, uri] of mongoUris.entries()) {
+        try {
+            if (index > 0) {
+                console.log(`Retrying MongoDB connection using fallback URI ${index + 1}/${mongoUris.length}...`);
+            }
+
+            await mongoose.connect(uri, {
+                serverSelectionTimeoutMS: mongoServerSelectionTimeoutMS,
+            });
+
+            console.log('Connected to MongoDB');
+            return;
+        } catch (error) {
+            lastError = error;
+            logMongoConnectionError(error, uri);
+            await mongoose.disconnect().catch(() => {});
+        }
+    }
+
+    throw lastError;
+};
+
+mongoose.connection.on('error', (error) => {
+    console.error('MongoDB connection error after startup:', error);
 });
 
 app.get('/', async (req, res) => {
@@ -43,10 +96,6 @@ app.get('/', async (req, res) => {
     //res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-app.use((err, req, res, next) => {
-    console.error(err.stack);
-    res.status(500).json({error: err.message});
-});
 app.use('/auth', require('./src/routes/authRoutes'));
 app.use('/buy', [
     require('./src/routes/buyRoutes'),
@@ -65,6 +114,11 @@ app.use('/mobile/service', [
     require('./src/routes/mobile/serviceRoute'),
 ]);
 app.use('/mobile/customer', require('./src/routes/customerRoutes'));
+
+app.use((err, req, res, next) => {
+    console.error(err.stack);
+    res.status(500).json({ error: err.message });
+});
 
 // app.get('/adminaccount', async (req, res) => {
 //     try {
@@ -86,7 +140,17 @@ app.use('/mobile/customer', require('./src/routes/customerRoutes'));
 
 //app.use('/auth', require('./src/routes/authRoutes'));
 
+const startServer = async () => {
+    try {
+        await connectToMongo();
 
-app.listen(port, () => {
-    console.log(`Example app listening at http://localhost:${port}`);
-});
+        app.listen(port, () => {
+            console.log(`Example app listening at http://localhost:${port}`);
+        });
+    } catch (error) {
+        console.error('Application startup aborted because MongoDB connection failed.');
+        process.exit(1);
+    }
+};
+
+startServer();

@@ -1,6 +1,8 @@
 const express = require('express');
 const { Customer } = require('../../model/userLoginModel');
 const { Services, ServicesItem, RequestService, RequestCompleted } = require('../../model/serviceModel');
+const sendServiceOrderMail = require('../../utils/sendServiceOrderMail');
+
 
 const router = express.Router();
 
@@ -85,6 +87,81 @@ router.post('/purchaseRequest', async (req, res) => {
     } catch (error) {
         console.error('Error submitting purchase:', error);
         return { success: false, message: 'Failed to submit purchase.' };
+    }
+});
+
+
+router.post('/v2/purchaseRequest', async (req, res) => {
+    try {
+        const { userId, cartItems, fullName, address, pincode, isNew } = req.body;
+
+        const savedRequests = [];
+
+        for (const item of cartItems) {
+            const request = new RequestService({
+                customer: userId,
+                service: item.serviceId,
+                price: item.price,
+                quantity: item.quantity,
+                notes: item.comment,
+                selectDate: item.selectDate,
+                selectTime: item.selectTime,
+                status: 'pending',
+                comments: '',
+            });
+
+            const savedRequest = await request.save();
+            savedRequests.push(savedRequest);
+        }
+
+        const requestIds = savedRequests.map(request => request._id);
+
+        const populatedRequests = await RequestService.find({ _id: { $in: requestIds } })
+            .populate('service', 'serviceName')
+            .populate('customer')
+            .exec();
+
+        const result = populatedRequests.reduce((acc, request) => {
+            acc._id.push(request._id);
+            acc.orderId.push(request.orderId);
+            acc.serviceName.push(request.service.serviceName);
+            return acc;
+        }, { _id: [], orderId: [], serviceName: [] });
+
+        if (isNew) {
+            let user = await Customer.findById(userId);
+            user.fullName = fullName;
+            user.address = address;
+            user.zip = pincode;
+            await user.save();
+        }
+
+        // 🔥 MAIL SEND HERE
+        try {
+            await sendServiceOrderMail({
+                customer: populatedRequests[0]?.customer,
+                orders: populatedRequests
+            });
+            console.log("Service order mail sent successfully");
+        } catch (mailError) {
+            console.error("Mail sending failed:", mailError);
+        }
+
+        return res.status(200).json({
+            success: true,
+            recId: result._id,
+            orderId: result.orderId,
+            serviceName: result.serviceName,
+            createdAt: new Date(),
+            message: 'Purchase submitted successfully!'
+        });
+
+    } catch (error) {
+        console.error('Error submitting purchase:', error);
+        return res.status(500).json({
+            success: false,
+            message: 'Failed to submit purchase.'
+        });
     }
 });
 
