@@ -15,7 +15,7 @@ const login = asyncHandler(async (req, res) => {
     }
     const userInfo = {
         userId: user._id,
-        role: 1,
+        role: user.role,
         fullName: `${user.fullName}`
     };
     const accessToken = jwt.sign(
@@ -25,7 +25,7 @@ const login = asyncHandler(async (req, res) => {
     const refreshToken = jwt.sign(
         {
             userId: userInfo.userId,
-            role: 1
+            role: userInfo.role
         },
         process.env.REFRESH_TOKEN_SECRET, { expiresIn: process.env.REFRESH_EXPIRE }
     );
@@ -63,7 +63,7 @@ const refresh = (req, res) => {
                             {
                                 userInfo : {
                                     userId: foundUser._id,
-                                    role: decoded.role,
+                                    role: foundUser.role,
                                     fullName: `${foundUser.fullName}`
                                 }
                             },
@@ -113,7 +113,7 @@ const verify = (req, res) => {
                         //const obj = foundUser.toObject();
                         const obj =  {
                             userId: foundUser._id,
-                            role: decoded.role,
+                            role: foundUser.role,
                             fullName: `${foundUser.fullName}`
                         };
                         const accessToken = jwt.sign(

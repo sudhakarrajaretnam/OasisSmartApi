@@ -114,6 +114,7 @@ app.use('/mobile/service', [
     require('./src/routes/mobile/serviceRoute'),
 ]);
 app.use('/mobile/customer', require('./src/routes/customerRoutes'));
+app.use('/customer', require('./src/routes/customerAdminRoutes'));
 
 app.use((err, req, res, next) => {
     console.error(err.stack);
